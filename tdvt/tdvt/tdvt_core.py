@@ -5,6 +5,7 @@
 """
 
 import argparse
+import asyncio
 import copy
 import csv
 import glob
@@ -140,7 +141,7 @@ class BatchQueueWork(object):
     def is_disabled(self):
         return isinstance(self.error_state, TestErrorDisabledTest)
 
-    def process_test_results(self, test_list):
+    async def process_test_results(self, test_list):
         # Check the output files.
         test_count = -1
         for f in test_list:
@@ -213,10 +214,15 @@ class BatchQueueWork(object):
             for t in test_list:
                 test_list_file.write(str(t) + "\n")
 
-    def run_process(self, cmdline):
-        self.cmd_output = str(subprocess.check_output(cmdline, stderr=subprocess.STDOUT, universal_newlines=True,
-                                                      timeout=self.timeout_seconds))
-    def run(self, test_list):
+    async def run_process(self, cmdline):
+        proc = await asyncio.create_subprocess_shell(
+                cmdline,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        self.cmd_output, self.error_state = await proc.communicate()
+
+    async def run(self, test_list):  # TODO: Let's rename this to be unique & descriptive
 
         if self.test_set.test_is_enabled is False:
             return 0
@@ -234,7 +240,7 @@ class BatchQueueWork(object):
 
         start_time = time.perf_counter()
         try:
-            self.run_process(cmdline)
+            await self.run_process(cmdline)
         except subprocess.CalledProcessError as e:
             error_output = str(e.output)
             logging.debug(
@@ -267,7 +273,7 @@ class BatchQueueWork(object):
         return total_time_ms
 
 
-def do_work(work):
+async def do_work(work: BatchQueueWork):
     logging.debug(work.get_thread_msg() + "Running test:" + work.test_name)
     if work.test_set.test_is_enabled is False:
         work.error_state = TestErrorDisabledTest()
@@ -276,8 +282,8 @@ def do_work(work):
         work.error_state = TestErrorSkippedTest()
 
     final_test_list = work.test_set.generate_test_file_list()
-    work.run(final_test_list)
-    work.process_test_results(final_test_list)
+    await work.run(final_test_list)  # this is on BatchQueueWork
+    await work.process_test_results(final_test_list)
 
     # If everything passed delete the log files so we don't collect a bunch of useless logs.
     passed = True
@@ -414,7 +420,7 @@ def write_json_results(all_test_results):
     json_file.close()
 
 
-def write_standard_test_output(all_test_results: Dict, output_dir: str):
+async def write_standard_test_output(all_test_results: Dict, output_dir: str):
     """Write the standard output. """
     passed = [x for x in all_test_results.values()
               if x.all_passed() is True
@@ -577,10 +583,15 @@ def write_csv_test_output(all_test_results, tds_file, skip_header, output_dir) -
     return total_failed_tests, total_skipped_tests, total_disabled_tests, total_tests
 
 
-def process_test_results(all_test_results, tds_file, skip_header, output_dir):
+async def process_test_results(
+    all_test_results,
+    tds_file,
+    skip_header,
+    output_dir
+) -> Optional[Tuple[int, int, int, int]]:
     if not all_test_results:
         return 0, 0, 0, 0
-    write_standard_test_output(all_test_results, output_dir)
+    await write_standard_test_output(all_test_results, output_dir)
     return write_csv_test_output(all_test_results, tds_file, skip_header, output_dir)
 
 
@@ -642,7 +653,7 @@ def run_diff(test_config, diff):
     return 0
 
 
-def run_tests_impl(test_set: TestSet, test_config: TdvtInvocation):
+async def run_tests_impl(test_set: TestSet, test_config: TdvtInvocation):
     all_test_results = {}
     all_work = []
 
@@ -651,7 +662,7 @@ def run_tests_impl(test_set: TestSet, test_config: TdvtInvocation):
     work.thread_id = test_config.thread_id
 
     # Do the work.
-    do_work(work)
+    await do_work(work)
 
     # Analyze the results of the work.
     all_test_results.update(work.results)
@@ -659,16 +670,16 @@ def run_tests_impl(test_set: TestSet, test_config: TdvtInvocation):
     return all_test_results
 
 
-def run_tests_serial(tests):
+async def run_tests_serial(tests):
     all_test_results = {}
 
     for test_set, tdvt_test_config in tests:
-        all_test_results.update(run_tests_impl(test_set, tdvt_test_config))
+        all_test_results.update(await run_tests_impl(test_set, tdvt_test_config))
 
     return all_test_results
 
 
-def run_tests(tdvt_test_config: TdvtInvocation, test_set: TestSet):
+async def run_tests(tdvt_test_config: TdvtInvocation, test_set: TestSet):
     # See if we need to generate test setup files.
     root_directory = get_root_dir()
     output_dir = tdvt_test_config.output_dir if tdvt_test_config.output_dir else root_directory
@@ -678,6 +689,6 @@ def run_tests(tdvt_test_config: TdvtInvocation, test_set: TestSet):
 
     tds_file = tdvt_test_config.tds
 
-    all_test_results = run_tests_impl(test_set, tdvt_test_config)
+    all_test_results = await run_tests_impl(test_set, tdvt_test_config)
 
-    return process_test_results(all_test_results, tds_file, tdvt_test_config.noheader, output_dir)
+    return await process_test_results(all_test_results, tds_file, tdvt_test_config.noheader, output_dir)

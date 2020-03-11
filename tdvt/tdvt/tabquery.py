@@ -10,7 +10,7 @@ def configure_tabquery_path():
     """Setup the tabquery path from ini settings."""
     global tab_cli_exe
     config = configparser.ConfigParser()
-    
+
     tdvt_cfg = get_ini_path_local_first('config/tdvt', 'tdvt')
     logging.debug("Reading tdvt ini file [{}]".format(tdvt_cfg))
     config.read(tdvt_cfg)
@@ -24,8 +24,8 @@ def configure_tabquery_path():
     logging.debug("Reading tdvt ini file tabquerycli path is [{}]".format(tab_cli_exe))
 
 def get_max_process_level_of_parallelization(desired_threads):
-    if sys.platform.startswith("darwin") and 'tabquerytool' in tab_cli_exe:
-        return 1
+    # if sys.platform.startswith("darwin") and 'tabquerytool' in tab_cli_exe:  #  TODO: uncomment this out later
+    #     return 1
     return desired_threads
 
 def build_tabquery_command_line(work):
@@ -50,7 +50,7 @@ class TabqueryCommandLine(object):
         global tab_cli_exe
         cli_arg = "--query-file-list" if work.test_config.logical else "--expression-file-list"
 
-        cmdline = [tab_cli_exe]
+        cmdline = [tab_cli_exe.replace(' ', '\ ')]  #  TODO there must be a way to auto-escape spaces.
         if work.test_config.tested_run_time_config is not None and work.test_config.tested_run_time_config.has_customized_tabquery_path():
             cmdline = [work.test_config.tested_run_time_config.tabquery_paths.get_path(sys.platform)]
 
@@ -87,8 +87,8 @@ class TabqueryCommandLine(object):
         cmdline.extend(["-DInMemoryLogicalCacheDisable"])
 
         self.extend_command_line(cmdline, work)
-        work.test_config.command_line = cmdline
-        return cmdline
+        work.test_config.command_line = ' '.join(cmdline)
+        return ' '.join(cmdline)
 
 def tabquerycli_exists(tabquery_cli_path: TabQueryPath = None):
     global tab_cli_exe
@@ -104,5 +104,3 @@ def tabquerycli_exists(tabquery_cli_path: TabQueryPath = None):
 
     logging.debug("Could not find tabquery at [{0}]".format(tab_cli_exe))
     return False
-
-

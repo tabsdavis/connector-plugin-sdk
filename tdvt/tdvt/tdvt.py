@@ -9,6 +9,7 @@ if sys.version_info[0] < 3:
     raise EnvironmentError("TDVT requires Python 3 or greater.")
 
 import argparse
+import asyncio
 import glob
 import json
 import pathlib
@@ -17,6 +18,8 @@ import shutil
 import threading
 import time
 import zipfile
+
+from asyncio import Queue as AsyncQueue, Semaphore
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -64,7 +67,7 @@ class TestOutputFiles(object):
             return
 
 
-def do_test_queue_work(i, q):
+def do_test_queue_work(i, q):  # TODO: Do we need this anymore?
     """This will be called in a queue.join() context, so make sure to mark all work items as done and
     continue through the loop. Don't try and exit or return from here if there are still work items in the queue.
     See the python queue documentation."""
@@ -80,16 +83,20 @@ def do_test_queue_work(i, q):
 
 
 class TestRunner():
-    def __init__(self, test_set: TestSet, test_config: TdvtInvocation, lock, verbose, thread_id):
-        threading.Thread.__init__(self)
+    def __init__(self, test_set: TestSet, test_config: TdvtInvocation, verbose, thread_id):
+        # threading.Thread.__init__(self)  # commented this out b/c we aren't threading anymore.
         self.test_set = test_set
         self.test_config = test_config
         self.error_code = 0
-        self.thread_id = thread_id
+        self.thread_id = thread_id  # TODO: remove
         self.verbose = verbose
-        self.thread_lock = lock
+        # self.thread_lock = lock
         self.temp_dir = make_temp_dir([self.test_config.suite_name, str(thread_id)])
         self.test_config.output_dir = self.temp_dir
+        self.failed_tests = 0
+        self.skipped_tests = 0
+        self.disabled_tests = 0
+        self.total_tests = 0
 
     def copy_files_to_zip(self, dst_file_name, src_dir, is_logs):
         dst = os.path.join(os.getcwd(), dst_file_name)
@@ -169,7 +176,7 @@ class TestRunner():
 
         return left_temp_dir
 
-    def run(self):
+    async def run(self):  # TODO: Rename to be unique & descriptive. We have two run() methods.
         # Send output to null.
         DEVNULL = open(os.devnull, 'wb')
         output = DEVNULL if not self.verbose else None
@@ -178,8 +185,8 @@ class TestRunner():
                                              str(self.thread_id)))
 
         start_time = time.time()
-        self.test_config.thread_id = self.thread_id
-        failed_tests, skipped_tests, disabled_tests, total_tests = run_tests(self.test_config, self.test_set)
+        self.test_config.thread_id = self.thread_id  # TODO: Remove
+        failed_tests, skipped_tests, disabled_tests, total_tests = await run_tests(self.test_config, self.test_set)
         logging.debug("\nFinished tdvt " + str(self.test_config) + "\n")
         print("\nFinished {0} {1} {2}\n".format(self.test_config.suite_name, self.test_config.config_file,
                                                 str(self.thread_id)))
@@ -510,12 +517,17 @@ def active_thread_count(threads):
     return active
 
 
-def test_runner(all_tests, test_queue, max_threads):
-    for i in range(0, max_threads):
-        worker = threading.Thread(target=do_test_queue_work, args=(i, test_queue))
-        worker.setDaemon(True)
-        worker.start()
-    test_queue.join()
+async def test_runner(all_tests, test_queue: AsyncQueue, max_threads: int):
+    sema = Semaphore(max_threads)
+    async with sema:
+        work = await test_queue.get()
+        await work.run()
+        # test_queue.task_done()
+    # for i in range(0, max_threads):
+    #     worker = threading.Thread(target=do_test_queue_work, args=(i, test_queue))
+    #     worker.setDaemon(True)
+    #     worker.start()
+    # test_queue.join()
     failed_tests = 0
     skipped_tests = 0
     disabled_tests = 0
@@ -523,29 +535,29 @@ def test_runner(all_tests, test_queue, max_threads):
     for work in all_tests:
         if work.copy_files_and_cleanup():
             print("Left temp dir: " + work.temp_dir)
-        failed_tests += work.failed_tests if work.failed_tests else 0
-        skipped_tests += work.skipped_tests if work.skipped_tests else 0
-        disabled_tests += work.disabled_tests if work.disabled_tests else 0
-        total_tests += work.total_tests if work.total_tests else 0
+        failed_tests += work.failed_tests
+        skipped_tests += work.skipped_tests
+        disabled_tests += work.disabled_tests
+        total_tests += work.total_tests
     return failed_tests, skipped_tests, disabled_tests, total_tests
 
 
-def run_tests_impl(tests: List[Tuple[TestSet, TdvtInvocation]], max_threads: int, args) -> Optional[Tuple[int, int, int, int]]:
+async def run_tests_impl(tests: List[Tuple[TestSet, TdvtInvocation]], max_threads: int, args) -> Optional[Tuple[int, int, int, int]]:
     if not tests:
         print("No tests found. Check arguments.")
         sys.exit()
 
-    smoke_test_queue = queue.Queue()
+    smoke_test_queue = AsyncQueue()
     smoke_tests = []
-    test_queue = queue.Queue()
+    test_queue = AsyncQueue()
     all_work = []
     lock = threading.Lock()
 
     for test_set, test_config in tests:
-        runner = TestRunner(test_set, test_config, lock, args.verbose, len(all_work) + 1)
+        runner = TestRunner(test_set, test_config, args.verbose, len(all_work) + 1)
         if test_set.smoke_test:
             smoke_tests.append(runner)
-            smoke_test_queue.put(runner)
+            await smoke_test_queue.put(runner)
         else:
             all_work.append(runner)
 
@@ -579,7 +591,7 @@ def run_tests_impl(tests: List[Tuple[TestSet, TdvtInvocation]], max_threads: int
         smoke_test_threads = min(len(smoke_tests), max_threads)
         print("Starting smoke tests. Creating", str(smoke_test_threads), "worker threads.\n")
 
-        failed_smoke_tests, skipped_smoke_tests, disabled_smoke_tests, total_smoke_tests = test_runner(
+        failed_smoke_tests, skipped_smoke_tests, disabled_smoke_tests, total_smoke_tests = await test_runner(
             smoke_tests, smoke_test_queue, smoke_test_threads)
 
         smoke_tests_run = total_smoke_tests - disabled_smoke_tests
@@ -609,11 +621,11 @@ def run_tests_impl(tests: List[Tuple[TestSet, TdvtInvocation]], max_threads: int
         if item.test_set.ds_name in failing_ds:
             item.test_set.test_is_skipped = True
         final_work.append(item)
-        test_queue.put(item)
+        await test_queue.put(item)
 
     print("\nStarting tests. Creating " + str(max_threads) + " worker threads.")
     start_time = time.time()
-    failed_tests, skipped_tests, disabled_tests, total_tests = test_runner(final_work, test_queue, max_threads)
+    failed_tests, skipped_tests, disabled_tests, total_tests = await test_runner(final_work, test_queue, max_threads)
 
     failed_tests += failed_smoke_tests
     skipped_tests += skipped_smoke_tests
@@ -645,7 +657,7 @@ def get_ds_list(ds):
     ds_list = [x.strip() for x in ds_list]
     return ds_list
 
-def run_desired_tests(args, ds_registry):
+async def run_desired_tests(args, ds_registry):
     generate_files(ds_registry, False)
     ds_to_run = ds_registry.get_datasources(get_ds_list(args.ds))
     if not ds_to_run:
@@ -684,11 +696,11 @@ def run_desired_tests(args, ds_registry):
         else:
             test_sets.extend(enqueue_tests(ds_info, args, suite))
 
-    failed_tests, skipped_tests, disabled_tests, total_tests = run_tests_impl(test_sets, max_threads, args)
+    failed_tests, skipped_tests, disabled_tests, total_tests = await run_tests_impl(test_sets, max_threads, args)
     return failed_tests
 
 
-def run_file(run_file: Path, output_dir: Path, threads: int, args) -> int:
+async def run_file(run_file: Path, output_dir: Path, threads: int, args) -> int:
     """Rerun all the failed tests listed in the json file."""
 
     logging.debug("Running failed tests from : " + str(run_file))
@@ -696,7 +708,7 @@ def run_file(run_file: Path, output_dir: Path, threads: int, args) -> int:
     root_directory = get_root_dir()
 
     failed_tests, skipped_tests, disabled_tests, total_tests = \
-        run_tests_impl(enqueue_failed_tests(run_file, root_directory, args), threads, args)
+        await run_tests_impl(enqueue_failed_tests(run_file, root_directory, args), threads, args)
 
     # This can be a retry-step.
     return 0
@@ -708,7 +720,7 @@ def run_generate(ds_registry):
     print("Done: " + str(end_time))
 
 
-def main():
+async def main():
     parser, ds_registry, args = init()
 
     if args.command == 'action':
@@ -731,7 +743,7 @@ def main():
             output_dir = os.getcwd()
             max_threads = get_level_of_parallelization(args)
             sys.exit(run_file(Path(args.run_file), Path(output_dir), max_threads, args))
-        error_code = run_desired_tests(args, ds_registry)
+        error_code = await run_desired_tests(args, ds_registry)
         sys.exit(error_code)
     elif args.command == 'action' and args.diff:
         tdvt_invocation = TdvtInvocation(from_args=args)
@@ -749,4 +761,4 @@ def main():
     sys.exit(-1)
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
