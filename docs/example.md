@@ -39,7 +39,7 @@ Each connector is typically based on a "class" such as ODBC or JDBC, and provide
 
 ## ![2]({{ site.baseurl }}/assets/pce-2.png) 
 
-The Tableau Custom Dialog file (.tcd) is optional. By default, your connecor inherits a connection dialog from its parent (defined by <span style="font-family: courier new">superclass</span> You can use the TCD file to customize the connection dialog.
+The Tableau Custom Dialog file (.tcd) is optional. By default, your connecor inherits a connection dialog from its parent (defined by <span style="font-family: courier new">superclass</span>.) You can use the TCD file to customize the connection dialog.
 For example, if you set <span style="font-family: courier new">show-ssl-check box</span> to "true", the **Require SSL** check box will display on the connection dialog.
 
 Here's an example:
