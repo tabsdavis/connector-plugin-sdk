@@ -50,11 +50,11 @@ def format_exclusions(directory):
                                 current_line = '    ' + exclusion + ','
                             else:
                                 if current_line == name + '= ':
-                                    current_line += exclusion + ','
+                                    current_line += exclusion + ', '
                                 else:
-                                    current_line += exclusion + ','
+                                    current_line += exclusion + ', '
                         # remove the comma from the last exclusion
-                        wrapped_exclusions.append(current_line.rstrip(','))
+                        wrapped_exclusions.append(current_line.rstrip(', '))
 
                         # replace the line with the formatted exclusions
                         lines[i] = '\n'.join(wrapped_exclusions) + '\n'
